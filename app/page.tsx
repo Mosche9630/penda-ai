@@ -80,6 +80,7 @@ export default function Dashboard() {
   const loadConversations = async (userId: string) => {
     try {
       const res = await fetch(`/api/chat/save?userId=${userId}`);
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success) {
         setConversations(data.conversations || []);
@@ -95,9 +96,10 @@ export default function Dashboard() {
     setMobileMenuOpen(false);
     try {
       const res = await fetch(`/api/chat/save?conversationId=${convId}`);
+      if (!res.ok) throw new Error("Erreur serveur");
       const data = await res.json();
       if (data.success) {
-        const formattedMsgs: Message[] = data.messages.map((m: any) => ({
+        const formattedMsgs: Message[] = (data.messages || []).map((m: any) => ({
           role: m.role,
           content: m.content,
           type: m.metadata?.type || 'text',
@@ -130,6 +132,7 @@ export default function Dashboard() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(blobUrl);
     } catch (e) {
       window.open(url, '_blank');
     }
@@ -146,31 +149,47 @@ export default function Dashboard() {
     setMessages(newMessages);
     setLoading(true);
 
+    let currentConvId = activeConvId;
+
+    // Enregistrement asynchrone sécurisé du message utilisateur
     if (user?.id) {
-      fetch('/api/chat/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: user.id,
-          conversationId: activeConvId,
-          title: userText.slice(0, 30) + '...',
-          role: 'user',
-          content: userText
-        })
-      }).then(res => res.json()).then(d => {
-        if (d.conversationId && !activeConvId) {
+      try {
+        const saveRes = await fetch('/api/chat/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.id,
+            conversationId: currentConvId,
+            title: userText.slice(0, 30) + '...',
+            role: 'user',
+            content: userText
+          })
+        });
+        const d = await saveRes.json();
+        if (d.conversationId && !currentConvId) {
+          currentConvId = d.conversationId;
           setActiveConvId(d.conversationId);
-          loadConversations(user.id!);
+          loadConversations(user.id);
         }
-      });
+      } catch (saveErr) {
+        console.warn("Avertissement: Sauvegarde locale échouée (mode dégradé):", saveErr);
+      }
     }
 
     try {
+      // Envoi de l'historique complet 'messages' pour donner du contexte à l'IA
       const res = await fetch('/api/orchestrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: userText, city: user?.city || 'Lubumbashi' }),
+        body: JSON.stringify({ 
+          prompt: userText, 
+          city: user?.city || 'Lubumbashi',
+          history: messages 
+        }),
       });
+
+      if (!res.ok) throw new Error("Erreur de connexion à l'orchestrateur");
+
       const data = await res.json();
 
       if (data.success) {
@@ -180,23 +199,30 @@ export default function Dashboard() {
 
         setMessages([...newMessages, assistantMsg]);
 
+        // Enregistrement asynchrone sécurisé de la réponse de l'assistant
         if (user?.id) {
           fetch('/api/chat/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               userId: user.id,
-              conversationId: activeConvId,
+              conversationId: currentConvId,
               role: 'assistant',
               content: data.type === 'text' ? data.content : 'Campagne marketing générée',
               metadata: data.type === 'campaign' ? { type: 'campaign', data: data.data } : { type: 'text' }
             })
-          });
+          }).catch(err => console.warn("Avertissement: Échec de sauvegarde de la réponse:", err));
         }
+      } else {
+        throw new Error(data.error || "Erreur serveur");
       }
     } catch (err) {
       console.error("Erreur Orchestrateur:", err);
-      setMessages([...newMessages, { role: 'assistant', content: 'Désolé, une erreur est survenue lors du traitement. Réessayez.', type: 'text' }]);
+      setMessages([...newMessages, { 
+        role: 'assistant', 
+        content: 'Désolé, une erreur de connexion est survenue. Vérifiez votre réseau ou réessayez dans un instant.', 
+        type: 'text' 
+      }]);
     } finally {
       setLoading(false);
     }
@@ -313,7 +339,7 @@ export default function Dashboard() {
           </button>
         </header>
 
-        {/* Zone des Messages - Prend exactement la hauteur restante */}
+        {/* Zone des Messages */}
         <main 
           ref={mainScrollRef}
           onScroll={handleScroll}
@@ -454,7 +480,7 @@ export default function Dashboard() {
           </button>
         )}
 
-        {/* Barre de Saisie Fixée Réellement en Bas sans Débordement */}
+        {/* Barre de Saisie */}
         <footer className="p-2.5 md:p-4 border-t border-gray-800/80 bg-[#070A10]/95 backdrop-blur-md w-full flex-shrink-0">
           <form onSubmit={handleSendMessage} className="max-w-3xl mx-auto flex items-center bg-gray-900/90 rounded-2xl border border-gray-800 p-1 md:p-2 focus-within:border-[#7C3AED] transition shadow-inner">
             <input
